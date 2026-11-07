@@ -20,15 +20,15 @@ html,body{background:#081a42;color:white;font-family:Arial,sans-serif;text-align
  function say(t){m.textContent=t;}
  b.onclick=function(){
    if(!/PlayStation 4[ \/]9\.00/i.test(navigator.userAgent)){say('ERROR: This test is intended only for PS4 firmware 9.00.');return;}
-   b.disabled=true;say('Checking local ps4debug-ng.bin...');
-   var req=new XMLHttpRequest(); req.open('GET','ps4debug-ng.bin',true);req.responseType='arraybuffer';
+   b.disabled=true;say('Checking local ps4debug-NG.bin...');
+   var req=new XMLHttpRequest(); req.open('GET','ps4debug-NG.bin',true);req.responseType='arraybuffer';
    req.onload=function(){
-    if(req.status!==200||!req.response||req.response.byteLength<1000000){say('ERROR: Missing or invalid ps4debug-ng.bin. Upload the official ~3 MB BIN file beside this HTML page.');b.disabled=false;return;}
+    if(req.status!==200||!req.response||req.response.byteLength<1000000){say('ERROR: Missing or invalid ps4debug-NG.bin. Upload the official ~3 MB BIN file beside this HTML page.');b.disabled=false;return;}
     say('Payload found. Starting PSFree / GoldHEN exploit...');
     var script=document.createElement('script');script.type='module';script.src='900/alert.js';
     script.onerror=function(){say('ERROR: Could not load PSFree scripts.');b.disabled=false;};document.head.appendChild(script);
    };
-   req.onerror=function(){say('ERROR: ps4debug-ng.bin could not be loaded.');b.disabled=false;};req.send();
+   req.onerror=function(){say('ERROR: ps4debug-NG.bin could not be loaded.');b.disabled=false;};req.send();
  };
 })();
 </script></body></html>
