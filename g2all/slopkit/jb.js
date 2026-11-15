@@ -32,7 +32,7 @@ const STOP_BEFORE_DOUBLE = params.get("stop") === "beforedouble";
 function hostOk() {
   var m = document.getElementById("msgs");
   if (m) {
-    m.innerHTML = "GoldHEN v2.4b18.12 Loaded ...";
+    m.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
   }
 }
 
@@ -237,7 +237,7 @@ let allDone = false,
 
     const KPATCH_FILE =
       "slopkit/patches/" + (off.kpatch || fwKey.replace(".", "") + ".bin");
-    const PAYLOAD_FILE = "goldhen_2.4b18.12.bin";
+    const PAYLOAD_FILE = "goldhen_2.4b18.14.bin";
     const needPatch = ["k_sysent_661", "k_jmp_rsi"].filter(
       (k) => off[k] === undefined,
     );
@@ -572,6 +572,64 @@ let allDone = false,
       };
     }
     const sc = (num, ...a) => callAddr(stubAddr.get(num), a);
+    function kzEnsureSetuidStub() {
+      const SETUID = 23;
+      if (!stubAddr.has(SETUID)) {
+        for (let o = 0; o < off.k_scan_stage1; o += 16) {
+          const v = p.read8(libkernelBase.add32(o));
+          if ((v.low & 0x00ffffff) !== 0xc0c748 || v.hi >>> 24 !== 0x49) continue;
+          if ((((v.low >>> 24) | ((v.hi & 0x00ffffff) << 8)) >>> 0) === SETUID) {
+            stubAddr.set(SETUID, libkernelBase.add32(o));
+            break;
+          }
+        }
+      }
+      return stubAddr.has(SETUID);
+    }
+    function kzWithPrimitive(fn) {
+      const saved = p.read8(mainMf);
+      p.write8(mainMf, G.G0);
+      try { return fn(); } finally { p.write8(mainMf, saved); }
+    }
+    function kzCheckGoldHEN() {
+      try {
+        return kzWithPrimitive(function () {
+          if (!kzEnsureSetuidStub()) return false;
+          return sc(23, 0).i32 === 0 && sc(SYS.getuid).i32 === 0;
+        });
+      } catch (e) { return false; }
+    }
+    async function kzLaunchPS4Debug() {
+      if (!kzCheckGoldHEN()) throw new Error('GoldHEN is not active.');
+      const rsp = await fetch('ps4debug-NG.bin');
+      if (!rsp.ok) throw new Error('PS4Debug-NG file unavailable (HTTP ' + rsp.status + ').');
+      const blob = new Uint8Array(await rsp.arrayBuffer());
+      if (blob.byteLength < 1000000 || blob[0] !== 0xe9) throw new Error('PS4Debug-NG file is missing or incomplete.');
+      return kzWithPrimitive(function () {
+        if (!kzEnsureSetuidStub()) throw new Error('setuid syscall is unavailable.');
+        if (off.wk___imp_pthread_create === undefined || off.k_pthread_create === undefined)
+          throw new Error('pthread_create offsets are unavailable for this firmware.');
+        const size = (blob.length + 0x3fff) & ~0x3fff;
+        const mapped = sc(SYS.mmap, 0, size, 7, 0x1002, -1, 0);
+        const entry = new int64(mapped.lo, mapped.hi);
+        if (mapped.i32 === -1 || entry.hi === 0) throw new Error('Unable to map PS4Debug-NG in memory.');
+        for (let i = 0; i < blob.length; i++) p.write1(entry.add32(i), blob[i]);
+        for (let i = 0; i < blob.length; i++) if (p.read1(entry.add32(i)) !== blob[i])
+          throw new Error('PS4Debug-NG memory verification failed at +' + i.toString(16));
+        const slotFn = p.read8(webkitBase.add32(off.wk___imp_pthread_create));
+        const expectedFn = libkernelBase.add32(off.k_pthread_create);
+        if (slotFn.low !== expectedFn.low || slotFn.hi !== expectedFn.hi)
+          throw new Error('pthread_create pointer does not match this firmware.');
+        const thread = new ArrayBuffer(8); keepAlive.push(thread);
+        new Uint8Array(thread).fill(0);
+        const rc = callAddr(expectedFn, [bufAddr(thread), 0, entry, 0]).i32;
+        const tdv = new DataView(thread);
+        const handle = new int64(tdv.getUint32(0, true), tdv.getUint32(4, true));
+        if (rc !== 0 || handle.hi === 0) throw new Error('PS4Debug-NG thread could not be started (rc=' + rc + ').');
+        return 'تم إرسال طلب تشغيل PS4Debug.';
+      });
+    }
+    window.kzRegisterDebugLauncher(kzLaunchPS4Debug, kzCheckGoldHEN);
     closeFd = (fd) => sc(SYS.close, fd).i32;
     function errno() {
       const r = callAddr(errorFn, []);
@@ -624,6 +682,7 @@ let allDone = false,
               " armings=0 reused=1 already=1",
           );
           hostAlready();
+          if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
           return;
         }
       }
@@ -3868,6 +3927,7 @@ let allDone = false,
     );
     try {
       if (!alreadyLoaded) finishUI(payloadRunning);
+      if (payloadRunning && typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
     } catch (eUI) {}
   }
 })();

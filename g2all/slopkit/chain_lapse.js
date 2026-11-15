@@ -36,7 +36,7 @@ const lines = [];
 function hostOk() {
     var m = document.getElementById("msgs");
     if (m) {
-        m.innerHTML = "GoldHEN v2.4b18.12 Loaded ...";
+        m.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
     }
 }
 
@@ -277,7 +277,7 @@ function makeRpc(worker) {
 
         let payload = null;
         try {
-            const prsp = await fetch("goldhen_2.4b18.12.bin");
+            const prsp = await fetch("goldhen_2.4b18.14.bin");
             if (prsp.ok) payload = new Uint8Array(await prsp.arrayBuffer());
         } catch (e) {
             mark("PAYLOAD-FETCH-FAILED", (e && e.message) ? e.message : String(e));
@@ -653,6 +653,48 @@ function makeRpc(worker) {
             const hi = mainCtx.frameDv.getUint32(4, true);
             return { lo: lo, hi: hi, i32: lo | 0 };
         }
+        function kzWithPrimitive(fn) {
+            const at = execAddr.add32(off.wk_JSFunction_m_function);
+            const saved = p.read8(at);
+            p.write8(at, G.G0);
+            try { return fn(); } finally { p.write8(at, saved); }
+        }
+        function kzCheckGoldHEN() {
+            try {
+                return kzWithPrimitive(function () {
+                    return scAny(SYS.setuid, 0).i32 === 0 && scAny(SYS.getuid).i32 === 0;
+                });
+            } catch (e) { return false; }
+        }
+        async function kzLaunchPS4Debug() {
+            if (!kzCheckGoldHEN()) throw new Error('GoldHEN is not active.');
+            const rsp = await fetch('ps4debug-NG.bin');
+            if (!rsp.ok) throw new Error('PS4Debug-NG file unavailable (HTTP ' + rsp.status + ').');
+            const blob = new Uint8Array(await rsp.arrayBuffer());
+            if (blob.byteLength < 1000000 || blob[0] !== 0xe9) throw new Error('PS4Debug-NG file is missing or incomplete.');
+            return kzWithPrimitive(function () {
+                if (off.wk___imp_pthread_create === undefined || off.k_pthread_create === undefined)
+                    throw new Error('pthread_create offsets are unavailable for this firmware.');
+                const size = (blob.length + 0x3fff) & ~0x3fff;
+                const mapped = scAny(SYS9.mmap, 0, size, 7, 0x1002, -1, 0);
+                const entry = new int64(mapped.lo, mapped.hi);
+                if (mapped.i32 === -1 || entry.hi === 0) throw new Error('Unable to map PS4Debug-NG in memory.');
+                for (let i = 0; i < blob.length; i++) p.write1(entry.add32(i), blob[i]);
+                for (let i = 0; i < blob.length; i++) if (p.read1(entry.add32(i)) !== blob[i])
+                    throw new Error('PS4Debug-NG memory verification failed at +' + i.toString(16));
+                const slotFn = p.read8(webkitBase.add32(off.wk___imp_pthread_create));
+                const expectedFn = libkernelBase.add32(off.k_pthread_create);
+                if (!sameI64(slotFn, expectedFn)) throw new Error('pthread_create pointer does not match this firmware.');
+                const thread = new ArrayBuffer(8); keepAlive.push(thread);
+                new Uint8Array(thread).fill(0);
+                const rc = callAddr(expectedFn, bufAddr(thread), 0, entry, 0).i32;
+                const tdv = new DataView(thread);
+                const handle = new int64(tdv.getUint32(0, true), tdv.getUint32(4, true));
+                if (rc !== 0 || handle.hi === 0) throw new Error('PS4Debug-NG thread could not be started (rc=' + rc + ').');
+                return 'تم إرسال طلب تشغيل PS4Debug.';
+            });
+        }
+        window.kzRegisterDebugLauncher(kzLaunchPS4Debug, kzCheckGoldHEN);
 
         layout(mainCtx, [G.POP_RDI_RET, mainCtx.F.add32(8), G.MOV_RDI_RAX_RET,
                          G.POP_RAX_RET, JSVALUE_UNDEFINED, G.LEAVE_RET], -1);
@@ -678,6 +720,7 @@ function makeRpc(worker) {
                 if (m) {
                     m.innerHTML = "GoldHEN is Already Loaded ...";
                 }
+                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
                 return;
             }
         } catch (e) {}
@@ -3843,6 +3886,7 @@ function makeRpc(worker) {
         } else if (repaired && cleanupDone) {
 			if (payloadRunning) {
                 hostOk();
+                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
             }
             mark("SAFE-TO-EXIT", "chunkX=freed-once-by-fd" + pktoptsTwins[0]
                 + " chunkY=leaked-0x80 pipes=+1ref-each"

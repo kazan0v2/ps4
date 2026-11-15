@@ -41,7 +41,7 @@ const STOP_BEFORE_DOUBLE = params.get("stop") === "beforedouble";
 function hostOk() {
     var m = document.getElementById("msgs");
     if (m) {
-        m.innerHTML = "GoldHEN v2.4b18.12 Loaded ...";
+        m.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
     }
 }
 
@@ -210,7 +210,7 @@ let payloadRunning = false;
               + " sites=" + KPATCH_JMP_SITES.length
             : "blob=" + kpatchName + " MISSING");
         try {
-            const r = await fetch("goldhen_2.4b18.12.bin");
+            const r = await fetch("goldhen_2.4b18.14.bin");
             if (r.ok) payload = new Uint8Array(await r.arrayBuffer());
         } catch (e) { mark("PAYLOAD-FETCH-THREW", e.message); }
         mark("PAYLOAD-BLOB", payload
@@ -439,6 +439,48 @@ let payloadRunning = false;
                      i32: M.frameDv.getUint32(0, true) | 0 };
         }
         const sc = (num, ...a) => callAddr(stubAddr.get(num), a);
+        function kzWithPrimitive(fn) {
+            const saved = p.read8(mainMf);
+            p.write8(mainMf, G.G0);
+            try { return fn(); } finally { p.write8(mainMf, saved); }
+        }
+        function kzCheckGoldHEN() {
+            try {
+                return kzWithPrimitive(function () {
+                    return sc(SYS.setuid, 0).i32 === 0 && sc(SYS.getuid).i32 === 0;
+                });
+            } catch (e) { return false; }
+        }
+        async function kzLaunchPS4Debug() {
+            if (!kzCheckGoldHEN()) throw new Error('GoldHEN is not active.');
+            const rsp = await fetch('ps4debug-NG.bin');
+            if (!rsp.ok) throw new Error('PS4Debug-NG file unavailable (HTTP ' + rsp.status + ').');
+            const blob = new Uint8Array(await rsp.arrayBuffer());
+            if (blob.byteLength < 1000000 || blob[0] !== 0xe9) throw new Error('PS4Debug-NG file is missing or incomplete.');
+            return kzWithPrimitive(function () {
+                if (off.wk___imp_pthread_create === undefined || off.k_pthread_create === undefined)
+                    throw new Error('pthread_create offsets are unavailable for this firmware.');
+                const size = (blob.length + 0x3fff) & ~0x3fff;
+                const mapped = sc(SYS.mmap, 0, size, 7, 0x1002, -1, 0);
+                const entry = new int64(mapped.lo, mapped.hi);
+                if (mapped.i32 === -1 || entry.hi === 0) throw new Error('Unable to map PS4Debug-NG in memory.');
+                for (let i = 0; i < blob.length; i++) p.write1(entry.add32(i), blob[i]);
+                for (let i = 0; i < blob.length; i++) if (p.read1(entry.add32(i)) !== blob[i])
+                    throw new Error('PS4Debug-NG memory verification failed at +' + i.toString(16));
+                const slotFn = p.read8(webkitBase.add32(off.wk___imp_pthread_create));
+                const expectedFn = libkernelBase.add32(off.k_pthread_create);
+                if (slotFn.low !== expectedFn.low || slotFn.hi !== expectedFn.hi)
+                    throw new Error('pthread_create pointer does not match this firmware.');
+                const thread = new ArrayBuffer(8); keepAlive.push(thread);
+                new Uint8Array(thread).fill(0);
+                const rc = callAddr(expectedFn, [bufAddr(thread), 0, entry, 0]).i32;
+                const tdv = new DataView(thread);
+                const handle = new int64(tdv.getUint32(0, true), tdv.getUint32(4, true));
+                if (rc !== 0 || handle.hi === 0) throw new Error('PS4Debug-NG thread could not be started (rc=' + rc + ').');
+                return 'تم إرسال طلب تشغيل PS4Debug.';
+            });
+        }
+        window.kzRegisterDebugLauncher(kzLaunchPS4Debug, kzCheckGoldHEN);
         function errno() {
             const r = callAddr(errorFn, []);
             const a = new int64(r.lo, r.hi);
@@ -457,6 +499,7 @@ let payloadRunning = false;
                 if (m) {
                     m.innerHTML = "GoldHEN is Already Loaded ...";
                 }
+                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
                 return;
             }
         } catch (e) {}
@@ -2366,6 +2409,7 @@ let payloadRunning = false;
                                         mark("PAYLOAD-RUNNING",
                                             "bytes=" + payload.length + " entry=" + entry);
 										hostOk();
+                                        if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
                                     }
                                 }
                             }

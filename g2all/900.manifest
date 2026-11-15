@@ -1,9 +1,10 @@
-CACHE MANIFEST
-# KAZANOVA debug button visible after GoldHEN payload request v7 2026-11-07
+CACHE MANIFEST 
+
 CACHE: 
+ps4debug-NG.bin
 ../img.jpg
 ../style.css
-goldhen_2.4b18.12.bin
+goldhen_2.4b18.14.bin
 index.html
 900\alert.js
 900\config.js

