@@ -1713,7 +1713,6 @@ export async function kexploit() {
 
   if (localStorage.ExploitLoaded === "yes" && sessionStorage.ExploitLoaded != "yes") {
     msgs.innerHTML = "GoldHEN is Already Loaded ...";
-    if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
     return new Promise(() => {});
   }
 
@@ -1819,7 +1818,7 @@ function array_from_address(addr, size) {
   return og_array;
 }
 
-function runPayload(path, onSubmitted, onError) {
+function runPayload(path) {
   // Why xhr instead of fetch? More universal support, more control, better errors, etc.
   log(`loading ${path}`);
   const xhr = new XMLHttpRequest();
@@ -1860,35 +1859,21 @@ function runPayload(path, onSubmitted, onError) {
 
           // Unmap the memory used for the payload
           sysi("munmap", payload_buffer, padded_buffer.length);
-          if (typeof onSubmitted === "function") onSubmitted();
         } catch (e) {
           // Caught error while trying to execute payload
           log(`error in runPayload: ${e.message}`);
-          if (typeof onError === "function") onError(e);
         }
       } else {
         // Some other HTTP response code (eg. 404)
         log(`error retrieving payload, ${xhr.status}`);
-        if (typeof onError === "function") onError(new Error("HTTP " + xhr.status));
       }
     }
   };
   xhr.onerror = function () {
     log("network error");
-    if (typeof onError === "function") onError(new Error("Network error while loading payload."));
   };
   xhr.send();
 }
-
-window.kzRegisterDebugLauncher(function () {
-    return new Promise(function (resolve, reject) {
-        runPayload("./ps4debug-NG.bin", function () {
-            resolve("تم إرسال طلب تشغيل PS4Debug.");
-        }, reject);
-    });
-}, function () {
-    try { return chain.sysi("setuid", 0) === 0 && chain.sysi("getuid") === 0; } catch (e) { return false; }
-});
 
 function hostFail() {
     msgs.innerHTML = "Failed to Load! Restart Your Console ...";
@@ -1898,13 +1883,8 @@ function hostFail() {
 kexploit().then(() => {
     setTimeout(() => {
         try {
-            runPayload("./goldhen_2.4b18.14.bin", function () {
-                msgs.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
-                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
-            }, function (err) {
-                hostFail();
-                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(false);
-            });
+            runPayload("./goldhen_2.4b18.14.bin");
+            msgs.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
         } catch (e) {
             hostFail();
         }

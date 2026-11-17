@@ -41,17 +41,6 @@ async function doJb() {
     await load_script("css/loader.js");
     await load_script("css/workers.js");
 
-    window.kzRegisterDebugLauncher(async function () {
-      const rsp = await fetch("ps4debug-NG.bin");
-      if (!rsp.ok) throw new Error("PS4Debug-NG file unavailable (HTTP " + rsp.status + ").");
-      const bytes = new Uint8Array(await rsp.arrayBuffer());
-      if (bytes.byteLength < 1000000 || bytes[0] !== 0xe9) throw new Error("PS4Debug-NG file is incomplete.");
-      load_bin(bytes);
-      return "تم إرسال طلب تشغيل PS4Debug. تحقق من اتصال عميل التصحيح على الجهاز.";
-    }, function () {
-      try { return fn.setuid.invoke(0) !== -1; } catch (e) { return false; }
-    });
-
     switch (version.console) {
       case 4:
         await load_script("css/ps4/kernel.js");
@@ -65,7 +54,6 @@ async function doJb() {
 
     if (fn.setuid.invoke(0) !== -1) {
       msgs.innerHTML = "GoldHEN is Already Loaded ...";
-      if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
       return;
     }
 
@@ -121,7 +109,6 @@ async function doJb() {
       const bin_buf = await bin_rsp.arrayBuffer();
       const bin_u8 = new Uint8Array(bin_buf);
       load_bin(bin_u8);
-      if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
     }
 
     msgs.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
