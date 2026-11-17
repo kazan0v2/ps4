@@ -1697,6 +1697,7 @@ export async function kexploit() {
     
     if (localStorage.ExploitLoaded === "yes" && sessionStorage.ExploitLoaded != "yes") {
         msgs.innerHTML = "GoldHEN is Already Loaded ...";
+        if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
         return new Promise(() => {});
     }
  
@@ -1799,35 +1800,69 @@ function array_from_address(addr, size) {
     return og_array;
 }
 
-function runPayload(PLfile) {
+function runPayload(PLfile, onSubmitted, onError, minBytes) {
   var loader_addr = chain.sysp('mmap', 0, 0x1000, 7, 0x41000, -1, 0);
   var tmpStubArray = array_from_address(loader_addr, 1);
   tmpStubArray[0] = 0x00C3E7FF;
 
   var req = new XMLHttpRequest();
   req.responseType = "arraybuffer";
-  req.open('GET', PLfile);
-  req.send();
-
+  req.open('GET', PLfile, true);
   req.onreadystatechange = function () {
-    if (req.readyState == 4) {
-      if (req.status === 200 && req.response) {
+    if (req.readyState !== 4) return;
+    if (req.status === 200 && req.response) {
+      if (minBytes && req.response.byteLength < minBytes) {
+        if (typeof onError === 'function') onError(new Error('Payload file is missing or incomplete.'));
+        return;
+      }
+      try {
         var PLD = req.response;
         var payload_buffer = chain.sysp('mmap', 0, PLD.byteLength * 4, 7, 0x1002, -1, 0);
         var pl = array_from_address(payload_buffer, PLD.byteLength * 4);
-        var padding = new Uint8Array(4 - (req.response.byteLength % 4) % 4);
+        var padding = new Uint8Array((4 - (req.response.byteLength % 4)) % 4);
         var tmp = new Uint8Array(req.response.byteLength + padding.byteLength);
         tmp.set(new Uint8Array(req.response), 0);
         tmp.set(padding, req.response.byteLength);
         var shellcode = new Uint32Array(tmp.buffer);
         pl.set(shellcode, 0);
         var pthread = malloc(0x10);
-
         call_nze('pthread_create', pthread, 0, loader_addr, payload_buffer);
+        if (typeof onSubmitted === 'function') onSubmitted();
+      } catch (err) {
+        if (typeof onError === 'function') onError(err);
+        else hostFail();
       }
+    } else {
+      var loadError = new Error('Could not load payload: HTTP ' + req.status);
+      if (typeof onError === 'function') onError(loadError);
+      else hostFail();
     }
   };
+  req.onerror = function () {
+    var networkError = new Error('Network error while loading payload.');
+    if (typeof onError === 'function') onError(networkError);
+    else hostFail();
+  };
+  req.send();
 }
+
+let kzDebugRequestInFlight = false;
+window.kzRegisterDebugLauncher(function () {
+  return new Promise(function (resolve, reject) {
+    if (kzDebugRequestInFlight) { reject(new Error('جارٍ تشغيل PS4Debug بالفعل.')); return; }
+    kzDebugRequestInFlight = true;
+    runPayload('./ps4debug-NG.bin', function () {
+      kzDebugRequestInFlight = false;
+      resolve('تم إرسال طلب تشغيل PS4Debug. تحقق من اتصال عميل التصحيح على الجهاز.');
+    }, function (err) {
+      kzDebugRequestInFlight = false;
+      reject(err);
+    }, 1000000);
+  });
+}, function () {
+  try { return chain.sysi('setuid', 0) === 0 && chain.sysi('getuid') === 0; }
+  catch (e) { return false; }
+});
 
 function hostFail() {
     msgs.innerHTML = "Failed to Load! Restart Your Console ...";
@@ -1837,8 +1872,13 @@ function hostFail() {
 kexploit().then(() => {
     setTimeout(() => {
         try {
-            runPayload("./goldhen_2.4b18.14.bin");
-            msgs.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
+            runPayload("./goldhen_2.4b18.14.bin", function () {
+                msgs.innerHTML = "GoldHEN v2.4b18.14 Loaded ...";
+                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(true);
+            }, function (err) {
+                hostFail();
+                if (typeof window.kzSetGoldhenActive === "function") window.kzSetGoldhenActive(false);
+            });
         } catch (e) {
             hostFail();
         }
