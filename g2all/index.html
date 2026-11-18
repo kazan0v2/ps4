@@ -8,30 +8,118 @@
   var panel = null, button = null, status = null;
   var launcher = null, checker = null;
   var isActive = false, inactiveChecks = 0, busy = false;
+  var autoLaunchState = 'idle'; // idle | scheduled | running | started | failed
+  var autoLaunchTimer = null;
 
   function render() {
     if (!panel) return;
     panel.style.display = isActive ? 'block' : 'none';
     panel.setAttribute('aria-hidden', isActive ? 'false' : 'true');
-    if (button) button.disabled = busy || !isActive;
+
+    // The payload is launched automatically after GoldHEN is confirmed.
+    // Keep the button as a status/retry control and prevent duplicate launches.
+    if (button) {
+      var autoBusy = autoLaunchState === 'scheduled' ||
+                     autoLaunchState === 'running' ||
+                     autoLaunchState === 'started';
+      button.disabled = busy || autoBusy || !isActive || typeof launcher !== 'function';
+      button.textContent = autoLaunchState === 'started'
+        ? 'PS4Debug يعمل'
+        : (autoBusy ? 'جاري تشغيل PS4Debug...' : 'تشغيل PS4Debug');
+    }
+  }
+
+  function errorText(err) {
+    return String(err && err.message ? err.message : err);
+  }
+
+  function runDebug(source) {
+    if (!isActive || busy || typeof launcher !== 'function') return;
+    if (autoLaunchState === 'running' || autoLaunchState === 'started') return;
+
+    if (autoLaunchTimer !== null) {
+      window.clearTimeout(autoLaunchTimer);
+      autoLaunchTimer = null;
+    }
+
+    busy = true;
+    autoLaunchState = 'running';
+    if (status) {
+      status.textContent = source === 'auto'
+        ? 'تم تفعيل GoldHEN بنجاح. جاري تشغيل PS4Debug تلقائيًا...'
+        : 'جاري إعادة محاولة تشغيل PS4Debug...';
+    }
+    render();
+
+    var launchResult;
+    try {
+      launchResult = launcher();
+    } catch (err) {
+      launchResult = Promise.reject(err);
+    }
+
+    Promise.resolve(launchResult).then(function (result) {
+      autoLaunchState = 'started';
+      if (status) status.textContent = result || 'تم تشغيل PS4Debug تلقائيًا.';
+    }).catch(function (err) {
+      autoLaunchState = 'failed';
+      if (status) status.textContent = 'تعذّر تشغيل PS4Debug تلقائيًا: ' + errorText(err);
+    }).finally(function () {
+      busy = false;
+      render();
+    });
+  }
+
+  function scheduleAutoLaunch() {
+    if (!isActive || typeof launcher !== 'function' || autoLaunchState !== 'idle') return;
+
+    autoLaunchState = 'scheduled';
+    if (status) status.textContent = 'GoldHEN نشط. سيتم تشغيل PS4Debug تلقائيًا...';
+    render();
+
+    // Give the GoldHEN route a short moment to finish its success/cleanup path.
+    autoLaunchTimer = window.setTimeout(function () {
+      autoLaunchTimer = null;
+      if (!isActive) {
+        autoLaunchState = 'idle';
+        render();
+        return;
+      }
+      autoLaunchState = 'idle';
+      runDebug('auto');
+    }, 700);
   }
 
   function setGoldhenActive(active, message) {
     isActive = !!active;
     if (isActive) {
       inactiveChecks = 0;
-      if (status) status.textContent = message || 'GoldHEN نشط — زر PS4Debug جاهز.';
+      if (status && autoLaunchState === 'idle') {
+        status.textContent = message || 'GoldHEN نشط — جاري تجهيز PS4Debug.';
+      }
+      render();
+      // This starts the PS4Debug payload; it does not merely reveal the button.
+      scheduleAutoLaunch();
     } else {
-      busy = false;
+      if (autoLaunchTimer !== null) {
+        window.clearTimeout(autoLaunchTimer);
+        autoLaunchTimer = null;
+      }
+      if (autoLaunchState === 'scheduled' || autoLaunchState === 'failed') {
+        autoLaunchState = 'idle';
+      }
       if (status) status.textContent = 'GoldHEN غير نشط.';
+      render();
     }
-    render();
   }
 
   window.kzSetGoldhenActive = setGoldhenActive;
   window.kzRegisterDebugLauncher = function (run, check) {
     if (typeof run === 'function') launcher = run;
     if (typeof check === 'function') checker = check;
+    render();
+    // Handles routes where GoldHEN reports success just before registration.
+    scheduleAutoLaunch();
   };
 
   function init() {
@@ -40,24 +128,14 @@
     status = document.getElementById('kz-direct-status');
     if (!panel || !button || !status) return;
 
-    button.addEventListener('click', async function () {
-      if (!isActive || busy) return;
+    button.addEventListener('click', function () {
+      if (!isActive || busy || autoLaunchState === 'started' || autoLaunchState === 'running') return;
       if (typeof launcher !== 'function') {
         status.textContent = 'مشغّل PS4Debug غير جاهز لهذا المسار.';
         return;
       }
-      busy = true;
-      status.textContent = 'جاري تحميل وتشغيل PS4Debug...';
-      render();
-      try {
-        var result = await launcher();
-        status.textContent = result || 'تم إرسال طلب تشغيل PS4Debug.';
-      } catch (err) {
-        status.textContent = 'تعذّر تشغيل PS4Debug: ' + String(err && err.message ? err.message : err);
-      } finally {
-        busy = false;
-        render();
-      }
+      // A manual retry is available only if the automatic attempt failed.
+      runDebug('manual');
     });
 
     render();
